@@ -1,0 +1,22 @@
+{
+  "experiment_stack": "gemma4-cross-hardware-lora-sft-v1",
+  "python_major_minor": "3.12",
+  "version_policy": "Record exact versions on the RTX5090 and install the identical lock file on the RTX4090.",
+  "expected_versions": {
+    "torch": null,
+    "transformers": null,
+    "peft": null,
+    "accelerate": null,
+    "safetensors": null
+  },
+  "cuda_toolkit_major_minor": "12.8",
+  "driver_policy": "record_and_require_compatible",
+  "profiling": {
+    "nsight_systems_required_on_feature_device": true,
+    "nsight_trace": true,
+    "nsight_gpu_metrics": true,
+    "hpctoolkit_gpu_cuda": "optional",
+    "hpctoolkit_pc_sampling": "not_required"
+  }
+}
+

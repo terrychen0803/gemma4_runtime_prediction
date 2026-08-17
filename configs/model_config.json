@@ -1,0 +1,35 @@
+{
+  "model_id": "google/gemma-4-E2B-it",
+  "model_revision": null,
+  "local_files_only": true,
+  "trust_remote_code": false,
+  "attention_implementation": "sdpa",
+  "gradient_checkpointing": true,
+  "torch_compile": false,
+  "use_cache": false,
+  "lora": {
+    "rank": 16,
+    "alpha": 32,
+    "dropout": 0.0,
+    "bias": "none",
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj",
+      "gate_proj",
+      "up_proj",
+      "down_proj"
+    ]
+  },
+  "optimizer": {
+    "name": "AdamW",
+    "learning_rate": 0.0002,
+    "weight_decay": 0.0,
+    "betas": [0.9, 0.999],
+    "eps": 1e-8,
+    "max_grad_norm": 1.0,
+    "fused": false
+  }
+}
+
