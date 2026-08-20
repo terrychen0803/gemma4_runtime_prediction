@@ -44,6 +44,11 @@ def load_baselines(
 
         if summary.get("run_type") != "baseline":
             raise ValueError(f"Ground truth must be profiler-free: {summary_path}")
+        if summary.get("instrumentation") != "window_only":
+            raise ValueError(
+                f"Baseline predates the low-instrumentation v2 contract: {summary_path}. "
+                "Recollect it with scripts/run_baseline.py."
+            )
 
         summaries.append(summary)
         metadata.append(load_json(metadata_path))
@@ -77,15 +82,14 @@ def aggregate_runtime(summaries: list[dict[str, Any]]) -> dict[str, float]:
 
 
 def selected_profiler_features(features: dict[str, Any]) -> dict[str, float]:
-    selected = {
-        "cuda_kernel": features.get("cuda_kernel", {}),
-        "cuda_memcpy": features.get("cuda_memcpy", {}),
-        "cuda_runtime_api": features.get("cuda_runtime_api", {}),
-        "nvtx": features.get("nvtx", {}),
-        "metric_table_row_counts": features.get("metric_table_row_counts", {}),
-        "profiled_training_summary": features.get("profiled_training_summary", {}),
-    }
-    return flatten_numeric(selected, prefix="source_profile")
+    if features.get("collection_mode") != "deployment":
+        raise ValueError("Prediction features must come from a deployment profile")
+    selected = features.get("deployment_features")
+    if not isinstance(selected, dict):
+        raise ValueError("Missing marker-free deployment_features")
+    # CHANGE NOTE: only x_* columns are legal model inputs. Oracle/NVTX,
+    # profiler-run summaries, and workload metadata are never flattened here.
+    return flatten_numeric(selected, prefix="x_profile")
 
 
 def main() -> None:
@@ -98,11 +102,14 @@ def main() -> None:
     parser.add_argument("--source-device", default="RTX5090")
     parser.add_argument("--target-device", default="RTX4090")
     parser.add_argument("--workloads", default="all")
-    parser.add_argument("--baseline-repeats", type=int, default=3)
-    parser.add_argument(
-        "--profile-mode", choices=["trace", "gpu-metrics"], default="trace"
-    )
+    parser.add_argument("--baseline-repeats", type=int, default=5)
     parser.add_argument("--profile-repeat", type=int, default=1)
+    parser.add_argument(
+        "--min-period-confidence",
+        type=float,
+        default=0.5,
+        help="Reject uncertain marker-free period detections instead of forcing a label.",
+    )
     parser.add_argument("--experiments", type=Path, default=DEFAULT_EXPERIMENTS)
     parser.add_argument("--runs-root", type=Path, default=DEFAULT_RUNS_ROOT)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
@@ -116,13 +123,15 @@ def main() -> None:
 
     if args.baseline_repeats < 1:
         raise ValueError("--baseline-repeats must be at least 1")
+    if not 0.0 <= args.min_period_confidence <= 1.0:
+        raise ValueError("--min-period-confidence must be between 0 and 1")
 
     source_device = sanitize_name(args.source_device)
     target_device = sanitize_name(args.target_device)
     runs_root = args.runs_root.resolve()
     workloads = load_workloads(args.experiments.resolve())
     workload_ids = parse_workload_ids(args.workloads, set(workloads))
-    mode_name = "nsys_trace" if args.profile_mode == "trace" else "nsys_gpu_metrics"
+    mode_name = "nsys_deployment"
     rows: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
 
@@ -173,47 +182,58 @@ def main() -> None:
             target_runtime = aggregate_runtime(target_summaries)
             workload = workloads[workload_id]
             row: dict[str, Any] = {
-                "workload_id": workload_id,
-                "source_device_id": source_device,
-                "target_device_id": target_device,
-                "model_id": workload["model_id"],
-                "micro_batch_size": workload["micro_batch_size"],
-                "sequence_length": workload["sequence_length"],
-                "tokens_per_iteration": (
+                "audit_workload_id": workload_id,
+                "audit_source_device_id": source_device,
+                "audit_target_device_id": target_device,
+                "audit_model_id": workload["model_id"],
+                "audit_micro_batch_size": workload["micro_batch_size"],
+                "audit_sequence_length": workload["sequence_length"],
+                "audit_tokens_per_iteration": (
                     workload["micro_batch_size"] * workload["sequence_length"]
                 ),
-                "dtype": workload["dtype"],
-                "gradient_accumulation_steps": workload[
+                "audit_dtype": workload["dtype"],
+                "audit_gradient_accumulation_steps": workload[
                     "gradient_accumulation_steps"
                 ],
-                "source_baseline_mean_ms": source_runtime["mean_ms"],
-                "source_baseline_median_ms": source_runtime["median_ms"],
-                "source_baseline_std_ms": source_runtime["std_ms"],
-                "target_ground_truth_mean_ms": target_runtime["mean_ms"],
-                "target_ground_truth_median_ms": target_runtime["median_ms"],
-                "target_ground_truth_std_ms": target_runtime["std_ms"],
-                "target_to_source_runtime_ratio": (
+                "audit_source_baseline_mean_ms": source_runtime["mean_ms"],
+                "audit_source_baseline_median_ms": source_runtime["median_ms"],
+                "audit_source_baseline_std_ms": source_runtime["std_ms"],
+                "y_target_iteration_mean_ms": target_runtime["mean_ms"],
+                "y_target_iteration_median_ms": target_runtime["median_ms"],
+                "audit_target_ground_truth_std_ms": target_runtime["std_ms"],
+                "audit_target_to_source_runtime_ratio": (
                     target_runtime["mean_ms"] / source_runtime["mean_ms"]
                 ),
-                "controlled_stack_fingerprint": next(
+                "audit_controlled_stack_fingerprint": next(
                     iter(source_fingerprints)
                 ),
-                "source_gpu_name": source_metadata[0].get("gpu_name"),
-                "source_gpu_total_memory_bytes": source_metadata[0].get(
+                "x_hardware_source_gpu_total_memory_bytes": source_metadata[0].get(
                     "gpu_total_memory_bytes"
                 ),
-                "source_gpu_multiprocessor_count": source_metadata[0].get(
+                "x_hardware_source_gpu_multiprocessor_count": source_metadata[0].get(
                     "gpu_multiprocessor_count"
                 ),
-                "target_gpu_name": target_metadata[0].get("gpu_name"),
-                "target_gpu_total_memory_bytes": target_metadata[0].get(
+                "x_hardware_target_gpu_total_memory_bytes": target_metadata[0].get(
                     "gpu_total_memory_bytes"
                 ),
-                "target_gpu_multiprocessor_count": target_metadata[0].get(
+                "x_hardware_target_gpu_multiprocessor_count": target_metadata[0].get(
                     "gpu_multiprocessor_count"
                 ),
+                "audit_source_gpu_name": source_metadata[0].get("gpu_name"),
+                "audit_target_gpu_name": target_metadata[0].get("gpu_name"),
             }
-            row.update(selected_profiler_features(load_json(feature_path)))
+            profile_features = load_json(feature_path)
+            confidence = float(
+                profile_features.get("deployment_features", {})
+                .get("period_detection", {})
+                .get("confidence", 0.0)
+            )
+            if confidence < args.min_period_confidence:
+                raise ValueError(
+                    f"Marker-free period confidence {confidence:.3f} is below "
+                    f"{args.min_period_confidence:.3f} for {workload_id}"
+                )
+            row.update(selected_profiler_features(profile_features))
             rows.append(row)
         except (FileNotFoundError, ValueError) as exception:
             if not args.allow_incomplete:
@@ -235,11 +255,14 @@ def main() -> None:
     manifest = {
         "source_device": source_device,
         "target_device": target_device,
-        "profile_mode": args.profile_mode,
+        "profile_mode": "deployment_marker_free",
         "baseline_repeats": args.baseline_repeats,
+        "min_period_confidence": args.min_period_confidence,
         "rows": len(rows),
         "skipped": skipped,
-        "target_column": "target_ground_truth_mean_ms",
+        "model_input_prefix": "x_",
+        "audit_prefix": "audit_",
+        "target_column": "y_target_iteration_median_ms",
         "output_csv": str(output),
     }
     output.with_suffix(".manifest.json").write_text(
@@ -250,4 +273,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

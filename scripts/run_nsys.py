@@ -18,7 +18,6 @@ from common import (
     sanitize_name,
 )
 
-
 TRAIN_SCRIPT = PROJECT_ROOT / "scripts" / "train_gemma4.py"
 CHECK_ENV_SCRIPT = PROJECT_ROOT / "scripts" / "check_environment.py"
 
@@ -30,27 +29,39 @@ def get_nsys_version() -> str | None:
         )
     except OSError:
         return None
-
     if result.returncode != 0:
         return None
-
     return result.stdout.strip() or result.stderr.strip()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Collect RTX5090 Gemma 4 Nsight Systems features."
+        description="Collect oracle or production-like marker-free Nsight profiles."
     )
     parser.add_argument("--device-id", required=True)
     parser.add_argument("--device", default="0")
     parser.add_argument("--workloads", default="G01")
     parser.add_argument(
-        "--profile-mode", choices=["trace", "gpu-metrics"], default="trace"
+        "--collection-mode",
+        choices=["deployment", "oracle"],
+        default="deployment",
+        help=(
+            "deployment is marker-free and externally bounded; oracle uses NVTX "
+            "and cudaProfilerApi only to validate cycle detection"
+        ),
     )
     parser.add_argument("--repeat", type=int, default=1)
     parser.add_argument("--gpu-metrics-devices", default="0")
     parser.add_argument("--gpu-metrics-frequency", type=int, default=1000)
     parser.add_argument("--gpu-metrics-set", default=None)
+    parser.add_argument("--delay", type=float, default=60.0)
+    parser.add_argument("--duration", type=float, default=30.0)
+    parser.add_argument(
+        "--deployment-iters",
+        type=int,
+        default=1000,
+        help="Extend only the synthetic deployment run so delayed capture sees steady cycles.",
+    )
     parser.add_argument("--experiments", type=Path, default=DEFAULT_EXPERIMENTS)
     parser.add_argument("--runs-root", type=Path, default=DEFAULT_RUNS_ROOT)
     parser.add_argument("--allow-download", action="store_true")
@@ -62,13 +73,17 @@ def main() -> None:
         raise ValueError("--repeat must be at least 1")
     if args.gpu_metrics_frequency < 10:
         raise ValueError("--gpu-metrics-frequency must be at least 10 Hz")
+    if args.delay < 0 or args.duration <= 0:
+        raise ValueError("--delay must be >= 0 and --duration must be > 0")
+    if args.deployment_iters < 1:
+        raise ValueError("--deployment-iters must be positive")
 
     experiments = args.experiments.resolve()
     runs_root = args.runs_root.resolve()
     workloads = load_workloads(experiments)
     workload_ids = parse_workload_ids(args.workloads, set(workloads))
     device_label = sanitize_name(args.device_id)
-    mode_name = "nsys_trace" if args.profile_mode == "trace" else "nsys_gpu_metrics"
+    mode_name = f"nsys_{args.collection_mode}"
 
     environment_command = [
         sys.executable,
@@ -81,7 +96,6 @@ def main() -> None:
     print_command(environment_command)
 
     nsys_version = None
-
     if not args.dry_run:
         if subprocess.run(environment_command, check=False).returncode != 0:
             raise SystemExit("GPU environment check failed.")
@@ -97,30 +111,39 @@ def main() -> None:
         if report_file.exists() and not args.force:
             print(f"[SKIP] {workload_id}: {report_file.name} exists")
             continue
-
         if run_dir.exists() and args.force and not args.dry_run:
             shutil.rmtree(run_dir)
 
         command = [
             "nsys",
             "profile",
-            "--trace=cuda,nvtx",
             "--sample=none",
             "--cpuctxsw=none",
-            "--capture-range=cudaProfilerApi",
-            "--capture-range-end=stop",
             "--force-overwrite=true",
+            f"--gpu-metrics-devices={args.gpu_metrics_devices}",
+            f"--gpu-metrics-frequency={args.gpu_metrics_frequency}",
         ]
+        if args.gpu_metrics_set:
+            command.append(f"--gpu-metrics-set={args.gpu_metrics_set}")
 
-        if args.profile_mode == "gpu-metrics":
+        if args.collection_mode == "oracle":
             command.extend(
                 [
-                    f"--gpu-metrics-devices={args.gpu_metrics_devices}",
-                    f"--gpu-metrics-frequency={args.gpu_metrics_frequency}",
+                    "--trace=cuda,nvtx",
+                    "--capture-range=cudaProfilerApi",
+                    "--capture-range-end=stop",
                 ]
             )
-            if args.gpu_metrics_set:
-                command.append(f"--gpu-metrics-set={args.gpu_metrics_set}")
+        else:
+            # CHANGE NOTE: deployment capture is externally controlled and does
+            # not require any marker/profiler API in the workload.
+            command.extend(
+                [
+                    "--trace=cuda",
+                    f"--delay={args.delay}",
+                    f"--duration={args.duration}",
+                ]
+            )
 
         command.extend(
             [
@@ -139,49 +162,46 @@ def main() -> None:
                 mode_name,
                 "--repeat",
                 str(args.repeat),
-                "--nvtx",
-                "--cuda-profiler-range",
                 "--experiments",
                 str(experiments),
                 "--runs-root",
                 str(runs_root),
             ]
         )
-
+        if args.collection_mode == "oracle":
+            command.extend(["--nvtx", "--cuda-profiler-range"])
+        else:
+            command.extend(["--iteration-override", str(args.deployment_iters)])
         if args.allow_download:
             command.append("--allow-download")
 
-        print(f"[NSYS-{args.profile_mode.upper()}] {workload_id}")
+        print(f"[NSYS-{args.collection_mode.upper()}] {workload_id}")
         print_command(command)
-
         if args.dry_run:
             continue
 
         run_dir.mkdir(parents=True, exist_ok=True)
         config = {
+            "schema_version": 2,
             "device_id": device_label,
             "workload_id": workload_id,
-            "profile_mode": args.profile_mode,
+            "collection_mode": args.collection_mode,
             "repeat": args.repeat,
             "nsys_version": nsys_version,
-            "trace": ["cuda", "nvtx"],
-            "sample": "none",
-            "cpuctxsw": "none",
-            "capture_range": "cudaProfilerApi",
-            "capture_range_end": "stop",
-            "gpu_metrics_devices": (
-                args.gpu_metrics_devices if args.profile_mode == "gpu-metrics" else None
-            ),
-            "gpu_metrics_frequency_hz": (
-                args.gpu_metrics_frequency if args.profile_mode == "gpu-metrics" else None
-            ),
+            "trace": ["cuda", "nvtx"] if args.collection_mode == "oracle" else ["cuda"],
+            "uses_workload_markers": args.collection_mode == "oracle",
+            "capture_control": "cudaProfilerApi" if args.collection_mode == "oracle" else "external_delay_duration",
+            "delay_seconds": args.delay if args.collection_mode == "deployment" else None,
+            "duration_seconds": args.duration if args.collection_mode == "deployment" else None,
+            "deployment_iteration_override": args.deployment_iters if args.collection_mode == "deployment" else None,
+            "gpu_metrics_devices": args.gpu_metrics_devices,
+            "gpu_metrics_frequency_hz": args.gpu_metrics_frequency,
             "gpu_metrics_set": args.gpu_metrics_set,
             "command": command,
         }
         (run_dir / "profiling_config.json").write_text(
             json.dumps(config, indent=2), encoding="utf-8"
         )
-
         return_code = run_with_log(command, run_dir / "nsys.log", PROJECT_ROOT)
         if return_code != 0:
             raise SystemExit(return_code)
@@ -193,4 +213,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
