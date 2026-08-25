@@ -20,7 +20,8 @@
       "gate_proj",
       "up_proj",
       "down_proj"
-    ]
+    ],
+    "exclude_modules": ".*(vision_tower|audio_tower).*"
   },
   "optimizer": {
     "name": "AdamW",
@@ -32,4 +33,3 @@
     "fused": false
   }
 }
-

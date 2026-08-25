@@ -29,7 +29,12 @@ def main() -> None:
     parser.add_argument("--device-id", required=True)
     parser.add_argument("--device", default="0")
     parser.add_argument("--workloads", default="G01")
-    parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument(
+        "--repeats",
+        type=int,
+        default=5,
+        help="Five repeats are recommended so the median is robust to transient noise.",
+    )
     parser.add_argument("--experiments", type=Path, default=DEFAULT_EXPERIMENTS)
     parser.add_argument("--runs-root", type=Path, default=DEFAULT_RUNS_ROOT)
     parser.add_argument("--allow-download", action="store_true")
@@ -119,4 +124,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
