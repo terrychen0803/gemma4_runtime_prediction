@@ -12,6 +12,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from build_prediction_table import selected_profiler_features  # noqa: E402
 from marker_free_features import extract_marker_free_features  # noqa: E402
+from run_nsys import is_expected_duration_stop  # noqa: E402
 
 
 class MarkerFreeFeatureTests(unittest.TestCase):
@@ -57,6 +58,14 @@ class MarkerFreeFeatureTests(unittest.TestCase):
             }
         )
         self.assertEqual(selected, {"x_profile.period.confidence": 0.9})
+
+    def test_deployment_accepts_duration_sigterm_codes(self) -> None:
+        self.assertTrue(is_expected_duration_stop("deployment", 143))
+        self.assertTrue(is_expected_duration_stop("deployment", -15))
+
+    def test_other_collection_exits_are_not_expected_stops(self) -> None:
+        self.assertFalse(is_expected_duration_stop("deployment", 1))
+        self.assertFalse(is_expected_duration_stop("oracle", 143))
 
 
 if __name__ == "__main__":

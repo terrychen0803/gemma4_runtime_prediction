@@ -110,6 +110,16 @@ the number of repeated synthetic training steps so a delayed external capture
 does not miss a fast workload; it does not change the computation inside an
 iteration and is never used for baseline labels.
 
+> **Change note (2026-08-26):** deployment profiling explicitly uses
+> `--kill=sigterm`. When the duration expires, Nsight can return `143` or `-15`
+> after successfully generating `profile.nsys-rep`. The runner treats those
+> codes as an expected deployment stop only when the report exists and is
+> non-empty. Oracle runs and every other non-zero return code still fail.
+
+If a previous `--workloads all` run stopped on return code 143 after writing a
+report, rerun the same command without `--force`. Completed workload reports are
+skipped and collection resumes with the first missing workload.
+
 Extract 1 ms time-series and marker-free cycle features:
 
 ```bash
