@@ -427,6 +427,10 @@ def main() -> None:
     resolved_model_revision = getattr(model.config, "_commit_hash", None)
 
     lora = model_config["lora"]
+    # CHANGE NOTE (2026-08-26): Gemma 4 reuses projection names inside its
+    # vision/audio towers, where they are Gemma4ClippableLinear wrappers that
+    # PEFT LoRA does not support. This experiment is text-only, so keep those
+    # towers frozen and scope adapters to the language-model projections.
     model = get_peft_model(
         model,
         LoraConfig(
@@ -436,6 +440,7 @@ def main() -> None:
             lora_dropout=float(lora["dropout"]),
             bias=lora["bias"],
             target_modules=list(lora["target_modules"]),
+            exclude_modules=lora.get("exclude_modules"),
         ),
     )
 

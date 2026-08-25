@@ -37,6 +37,23 @@ not a legal model input.
 If a workload does not fit every compared device, mark it unsupported. Do not
 silently reduce its batch size.
 
+### Gemma 4 text-only LoRA scope
+
+> **Change note (2026-08-26):** `configs/model_config.json` explicitly excludes
+> module paths under `vision_tower` and `audio_tower` from LoRA injection.
+
+Gemma 4 uses projection names such as `q_proj`, `k_proj`, `v_proj`, and
+`o_proj` in both the language model and its non-text towers. The latter use
+`Gemma4ClippableLinear`, which is not a PEFT-supported LoRA target. Because this
+project measures text-only causal-LM SFT, LoRA remains enabled for the language
+model's attention and MLP projections while the vision/audio towers stay
+frozen. This avoids monkey-patching model internals and preserves a clear,
+repeatable workload contract.
+
+If training still reports `Gemma4ClippableLinear is not supported`, verify that
+the run uses the repository's updated `configs/model_config.json` and that the
+installed PEFT exposes the `exclude_modules` argument on `LoraConfig`.
+
 ## Setup
 
 Create an environment and install dependencies on both GPU nodes:
